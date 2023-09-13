@@ -10,6 +10,9 @@ from torch_geometric.data import HeteroData
 from tqdm import tqdm
 
 
+from config import GnnConfig
+import mlflow
+
 class Model(ABC):
     '''
     Abstract class for all models
@@ -20,29 +23,6 @@ class Model(ABC):
         pass
 
 
-
-class HeteroGNN2(torch.nn.Module):
-    def __init__(self,HIDDEN_SIZE,EMBEDDING_SIZE,NUMBER_OF_CLASSES,DROP_RATE):
-        super().__init__()
-        self.DROP_RATE = DROP_RATE
-        self.conv1 = SAGEConv(in_channels=(-1, -1), out_channels=HIDDEN_SIZE)
-        self.conv2 = SAGEConv(in_channels=(-1, -1), out_channels=HIDDEN_SIZE)
-        self.conv3 = SAGEConv(in_channels=(-1, -1), out_channels=EMBEDDING_SIZE)
-        self.linear = Linear(in_channels=-1, out_channels=NUMBER_OF_CLASSES)
-
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.DROP_RATE, training=self.training)
-
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.DROP_RATE, training=self.training)
-
-        x = self.conv3(x, edge_index)
-        x = F.relu(x)
-        out = self.linear(x)
-        return out  
 
 class HeteroGNN(torch.nn.Module):
     def __init__(self, metadata,hidden_channels, out_channels, num_layers):
@@ -58,7 +38,7 @@ class HeteroGNN(torch.nn.Module):
 
         self.lin = Linear(hidden_channels, out_channels)
 
-    def forward(self, x_dict, edge_index_dict,embeddings_for):
+    def forward(self, x_dict, edge_index_dict,embeddings_for="transaction"):
         for conv in self.convs:
             x_dict = conv(x_dict, edge_index_dict)
             x_dict = {key: F.leaky_relu(x) for key, x in x_dict.items()}
@@ -76,7 +56,7 @@ class HeteroGnnClassificationModel(Model):
     def __init__(self,hgraph: HeteroData):
         #Masks
         self.val_input_nodes = ("transaction", hgraph["transaction"].val_mask)
-        self.kwargs = {'batch_size': 512, 'num_workers': 2, 'persistent_workers': True}
+        self.kwargs = {'batch_size': GnnConfig().batch_size , 'num_workers': 2, 'persistent_workers': True}
 
         #Loaders
         print(hgraph)
@@ -98,20 +78,14 @@ class HeteroGnnClassificationModel(Model):
 
     def get_model(self):
         try:
-            #load model
-            
-            #DROP_RATE = 0.3
-            #HIDDEN_SIZE = 512
-            EMBEDDING_SIZE = 256
-            NUMBER_OF_CLASSES = 2
 
-            hidden_channels = EMBEDDING_SIZE
-            out_channels = NUMBER_OF_CLASSES 
-            num_layers = 2
-            #model = HeteroGNN2(HIDDEN_SIZE,EMBEDDING_SIZE,NUMBER_OF_CLASSES,DROP_RATE)
+            #load model
+            hidden_channels = GnnConfig().EMBEDDING_SIZE
+            out_channels = GnnConfig().NUMBER_OF_CLASSES 
+            num_layers = GnnConfig().num_hetero_conv
+           
             model = HeteroGNN(self.hgraph.metadata(), hidden_channels, out_channels,num_layers) 
          
-    
             # Get lazy parameters
             batch = next(iter(self.train_loader))
             batch = batch.to(self.device, 'edge_index')
@@ -127,9 +101,10 @@ class HeteroGnnClassificationModel(Model):
     def train(self):
         try:
             model = self.get_model()
-            optimizer = torch.optim.Adam(model.parameters(), lr=0.0005 , weight_decay=0.0001)
+            optimizer = torch.optim.Adam(model.parameters(),lr= GnnConfig().lr , weight_decay=GnnConfig().weight_decay)
             criterion = torch.nn.CrossEntropyLoss()
-            EPOCHS = 1
+            EPOCHS = GnnConfig().EPOCHS
+            total_loss = 0
             for epoch in range(EPOCHS+1):
                 total_loss = 0
                 acc = 0
@@ -146,8 +121,8 @@ class HeteroGnnClassificationModel(Model):
                     total_loss += loss
                     loss.backward()
                     optimizer.step()
-
-            return model
+                
+            return model,total_loss
 
         except Exception as e:
             logging.error(f"Error while training GNN model: {e}")
